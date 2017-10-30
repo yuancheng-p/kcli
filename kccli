@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+# encoding: utf-8
+
+"""
+For each endpoint, we can
+
+1. show available connects
+2. show status of a connect
+3. restart
+4. pause
+5. delete (kill) a given connect
+6. create a connect
+
+TODO:
+1. fetch all the configurations, and backup them into curl
+2. while listing all the connectors, also show their status.
+
+"""
+
+import click
+import http.client
+import json
+import os
+
+ENV_CONFIG_FILE = os.path.join(os.environ['HOME'], '.kccli/env.json')
+
+
+class ConnectorManager(object):
+
+    URL_CONNECTORS = '/connectors'
+
+    def __init__(self, endpoint: str):
+        self.client = http.client.HTTPConnection(endpoint)
+
+    def _get(self, url):
+        self.client.request('GET', url)
+        resp = self.client.getresponse()
+        return resp.status, resp.read().decode()
+
+    def _post(self, url, body, headers=None):
+        if headers is None:
+            headers = {}
+        self.client.request('POST', url, body, headers)
+        resp = self.client.getresponse()
+        return resp.status, resp.read().decode()
+
+    def _post_json(self, url, body):
+        headers = {'Content-type': 'application/json'}
+        return self._post(url, body, headers)
+
+    def _delete(self, url):
+        self.client.request('DELETE', url)
+        resp = self.client.getresponse()
+        return resp.status, resp.read().decode()
+
+    def delete(self, name: str):
+        return self._delete('{}/{}'.format(self.URL_CONNECTORS, name))
+
+    def create(self, body):
+        return self._post_json(self.URL_CONNECTORS, body)
+
+    def list_connectors(self):
+        status, connectors = self._get(self.URL_CONNECTORS)
+        return json.loads(connectors)
+
+    def get(self, name: str):
+        status, conf = self._get('{}/{}'.format(self.URL_CONNECTORS, name))
+        return json.loads(conf)
+
+    def get_status(self, name: str):
+        status, body = self._get('{}/{}/status'.format(self.URL_CONNECTORS, name))
+        return json.loads(body)
+
+    def get_config(self, name: str):
+        status, conf = self._get('{}/{}/config'.format(self.URL_CONNECTORS, name))
+        return status, conf
+
+    def restart(self, name: str):
+        status, body = self._post('{}/{}/restart'.format(self.URL_CONNECTORS, name), '')
+        return status, body
+
+    def pause(self, name: str):
+        status, body = self._get('{}/{}/pause'.format(self.URL_CONNECTORS, name))
+        return json.loads(body)
+
+    def close(self):
+        self.client.close()
+
+
+@click.group()
+def cli():
+    pass
+
+
+@cli.group('env')
+def env():
+    pass
+
+
+@env.command('show')
+def env_show():
+    with open(ENV_CONFIG_FILE) as f:
+        data = json.load(f)
+        click.echo(json.dumps(data, indent=4))
+
+
+@env.command('set')
+@click.argument('name')
+def env_set_current(name):
+    data = None
+    with open(ENV_CONFIG_FILE) as f:
+        data = json.load(f)
+    if name not in data['available']:
+        click.echo("env '{}' is not available.".format(name))
+        return
+    data['current'] = name
+    with open(ENV_CONFIG_FILE, 'w') as f:
+        json.dump(data, f, indent=4)
+    click.echo('done.')
+
+
+@cli.command('list')
+def list_connectors():
+    connectors = _CM.list_connectors()
+    [click.echo(c) for c in connectors]
+
+
+@cli.command('get')
+@click.argument('name')
+def get(name):
+    conf = _CM.get(name)
+    click.echo(json.dumps(conf, indent=4))
+
+
+@cli.command('status')
+@click.argument('name')
+def get_status(name):
+    conf = _CM.get_status(name)
+    click.echo(json.dumps(conf, indent=4))
+
+
+@cli.command('conf')
+@click.argument('name')
+def get_config(name):
+    _, conf = _CM.get_config(name)
+    click.echo(conf)
+    click.echo(json.dumps(conf, indent=4))
+
+
+@cli.command('post')
+@click.argument('config_file', type=click.File('rb'))
+def post_conf(config_file):
+    body = config_file.read()
+    status, ret_body = _CM.create(body)
+    click.echo(status)
+    click.echo(ret_body)
+
+
+@cli.command('delete')
+@click.argument('name')
+def delete(name):
+    status, ret_body = _CM.delete(name)
+    click.echo(status)
+    click.echo(ret_body)
+
+
+@cli.command('restart')
+@click.argument('name')
+def restart(name):
+    status, ret_body = _CM.restart(name)
+    click.echo(status)
+    click.echo(ret_body)
+
+
+@cli.command('recreate')
+@click.argument('name')
+def recreate(name):
+    status, config = _CM.get_config(name)
+    if status == 404:
+        click.echo("connector '{}' not found.".format(name))
+        return
+
+    if status is not 200:
+        click.echo('failed to get config, status: {}'.format(status))
+        return
+
+    status, val = _CM.delete(name)
+    if status is not 204:
+        click.echo('failed to delete, status: {}'.format(status))
+        return
+
+    # TODO: backup the config into a tmp file
+    click.echo('deleted.')
+
+    body = {
+        'name': name,
+        'config': json.loads(config)
+    }
+    click.echo('re-post with the following config:')
+    click.echo(json.dumps(body, indent=4))
+    status, val = _CM.create(json.dumps(body))
+    if status == 201:
+        click.echo('created.')
+    else:
+        click.echo('failed to create, status: {}'.format(status))
+        click.echo(val)
+
+
+def main():
+    cli()
+
+if __name__ == "__main__":
+    base_url = None
+    with open(ENV_CONFIG_FILE) as f:
+        env = json.load(f)  # type: dict
+        if 'current' not in env:
+            click.echo('no current endpoint defined.')
+            exit(1)
+        current = env['current']
+        base_url = env['available'][current]
+
+    if base_url is not None:
+        _CM = ConnectorManager(base_url)
+        main()
+        _CM.close()
+    else:
+        click.echo('missing endpoint.')
