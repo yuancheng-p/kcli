@@ -14,6 +14,7 @@ For each endpoint, we can
 TODO:
 1. fetch all the configurations, and backup them into curl
 2. while listing all the connectors, also show their status.
+3. restart only one single task
 
 """
 
@@ -23,11 +24,13 @@ import json
 import os
 
 ENV_CONFIG_FILE = os.path.join(os.environ['HOME'], '.kccli/env.json')
+_CM = None
 
 
-class ConnectorManager(object):
+class KafkaConnectManager(object):
 
     URL_CONNECTORS = '/connectors'
+    URL_CONNECOTR_PLUGINS = '/connector-plugins'
 
     def __init__(self, endpoint: str):
         self.client = http.client.HTTPConnection(endpoint)
@@ -67,6 +70,10 @@ class ConnectorManager(object):
         status, conf = self._get('{}/{}'.format(self.URL_CONNECTORS, name))
         return json.loads(conf)
 
+    def get_plugins(self):
+        status, plugins = self._get(self.URL_CONNECOTR_PLUGINS)
+        return json.loads(plugins)
+
     def get_status(self, name: str):
         status, body = self._get('{}/{}/status'.format(self.URL_CONNECTORS, name))
         return json.loads(body)
@@ -89,6 +96,18 @@ class ConnectorManager(object):
 
 @click.group()
 def cli():
+    pass
+
+
+@cli.group('plugin')
+def plugin():
+    pass
+
+
+@plugin.command('show')
+def plugin_show():
+    plugins = _CM.get_plugins()
+    click.echo(json.dumps(plugins, indent=4))
     pass
 
 
@@ -119,7 +138,7 @@ def env_set_current(name):
     click.echo('done.')
 
 
-@cli.command('list')
+@cli.command('ls')
 def list_connectors():
     connectors = _CM.list_connectors()
     [click.echo(c) for c in connectors]
@@ -206,9 +225,6 @@ def recreate(name):
         click.echo(val)
 
 
-def main():
-    cli()
-
 if __name__ == "__main__":
     base_url = None
     with open(ENV_CONFIG_FILE) as f:
@@ -220,8 +236,8 @@ if __name__ == "__main__":
         base_url = env['available'][current]
 
     if base_url is not None:
-        _CM = ConnectorManager(base_url)
-        main()
+        _CM = KafkaConnectManager(base_url)
+        cli()
         _CM.close()
     else:
         click.echo('missing endpoint.')
