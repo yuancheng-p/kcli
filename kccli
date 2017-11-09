@@ -15,6 +15,7 @@ TODO:
 1. fetch all the configurations, and backup them into curl
 2. while listing all the connectors, also show their status.
 3. restart only one single task
+4. request confirmation for dangerous operations
 
 """
 
@@ -30,7 +31,7 @@ _CM = None
 class KafkaConnectManager(object):
 
     URL_CONNECTORS = '/connectors'
-    URL_CONNECOTR_PLUGINS = '/connector-plugins'
+    URL_CONNECTOR_PLUGINS = '/connector-plugins'
 
     def __init__(self, endpoint: str):
         self.client = http.client.HTTPConnection(endpoint)
@@ -71,7 +72,7 @@ class KafkaConnectManager(object):
         return json.loads(conf)
 
     def get_plugins(self):
-        status, plugins = self._get(self.URL_CONNECOTR_PLUGINS)
+        status, plugins = self._get(self.URL_CONNECTOR_PLUGINS)
         return json.loads(plugins)
 
     def get_status(self, name: str):
@@ -99,19 +100,19 @@ def cli():
     pass
 
 
-@cli.group('plugin')
+@cli.group('plugin', help="commands about plugin.")
 def plugin():
     pass
 
 
-@plugin.command('show')
+@plugin.command('ls', help="list all the available plugins.")
 def plugin_show():
     plugins = _CM.get_plugins()
     click.echo(json.dumps(plugins, indent=4))
-    pass
+    # TODO: timeout error
 
 
-@cli.group('env')
+@cli.group('env', help="environment configuration")
 def env():
     pass
 
@@ -130,35 +131,35 @@ def env_set_current(name):
     with open(ENV_CONFIG_FILE) as f:
         data = json.load(f)
     if name not in data['available']:
-        click.echo("env '{}' is not available.".format(name))
+        click.secho("env '{}' is not available.".format(name), fg='red')
         return
     data['current'] = name
     with open(ENV_CONFIG_FILE, 'w') as f:
         json.dump(data, f, indent=4)
-    click.echo('done.')
+    click.secho('done.', fg='green')
 
 
-@cli.command('ls')
+@cli.command('ls', help="list all the connectors.")
 def list_connectors():
     connectors = _CM.list_connectors()
     [click.echo(c) for c in connectors]
 
 
-@cli.command('get')
+@cli.command('get', help="get the detailed information of a connector.")
 @click.argument('name')
 def get(name):
     conf = _CM.get(name)
     click.echo(json.dumps(conf, indent=4))
 
 
-@cli.command('status')
+@cli.command('status', help="show the running status of a connector.")
 @click.argument('name')
 def get_status(name):
     conf = _CM.get_status(name)
     click.echo(json.dumps(conf, indent=4))
 
 
-@cli.command('conf')
+@cli.command('conf', help="show the configuration of a connector.")
 @click.argument('name')
 def get_config(name):
     _, conf = _CM.get_config(name)
@@ -166,24 +167,30 @@ def get_config(name):
     click.echo(json.dumps(conf, indent=4))
 
 
-@cli.command('post')
+@cli.command('post', help="create a new connector.")
 @click.argument('config_file', type=click.File('rb'))
 def post_conf(config_file):
     body = config_file.read()
     status, ret_body = _CM.create(body)
-    click.echo(status)
+    color = 'green'
+    if status is not 201:
+        color = 'red'
+    click.secho(str(status), fg=color)
     click.echo(ret_body)
 
 
-@cli.command('delete')
+@cli.command('rm', help="delete a connector.")
 @click.argument('name')
 def delete(name):
     status, ret_body = _CM.delete(name)
-    click.echo(status)
+    color = 'green'
+    if status is not 204:
+        color = 'red'
+    click.secho(str(status), fg=color)
     click.echo(ret_body)
 
 
-@cli.command('restart')
+@cli.command('restart', help="restart a connector.")
 @click.argument('name')
 def restart(name):
     status, ret_body = _CM.restart(name)
@@ -191,7 +198,7 @@ def restart(name):
     click.echo(ret_body)
 
 
-@cli.command('recreate')
+@cli.command('recreate', help="delete a connector and restart it.")
 @click.argument('name')
 def recreate(name):
     status, config = _CM.get_config(name)
