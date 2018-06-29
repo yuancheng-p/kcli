@@ -13,9 +13,14 @@ For each endpoint, we can
 
 TODO:
 1. fetch all the configurations, and backup them into curl
-2. while listing all the connectors, also show their status.
+# 2. while listing all the connectors, also show their status.
 3. restart only one single task
 4. request confirmation for dangerous operations
+5. show configuration's json diff while posting a new connector
+6. sanity check before posting a connector
+    - check if the name of the connector is the same as the group id.
+# 7. Pause a connector
+8. Template to generate the configurations for debezium
 
 """
 
@@ -26,6 +31,22 @@ import os
 
 ENV_CONFIG_FILE = os.path.join(os.environ['HOME'], '.kccli/env.json')
 _CM = None
+
+
+def echo_status_and_body(status, body):
+    fg = ''
+    if 200 <= status < 300:
+        fg = 'green'
+    elif 400 <= status < 600:
+        fg = 'red'
+    else:
+        fg = 'yellow'
+    click.secho(str(status), fg=fg)
+    # check if we can load the json
+    try:
+        click.echo(json.dumps(json.loads(body), indent=4))
+    except Exception:
+        click.echo(body)
 
 
 class KafkaConnectManager(object):
@@ -48,6 +69,13 @@ class KafkaConnectManager(object):
         resp = self.client.getresponse()
         return resp.status, resp.read().decode()
 
+    def _put(self, url, body="", headers=None):
+        if headers is None:
+            headers = {}
+        self.client.request('PUT', url, body, headers)
+        resp = self.client.getresponse()
+        return resp.status, resp.read().decode()
+
     def _post_json(self, url, body):
         headers = {'Content-type': 'application/json'}
         return self._post(url, body, headers)
@@ -64,12 +92,12 @@ class KafkaConnectManager(object):
         return self._post_json(self.URL_CONNECTORS, body)
 
     def list_connectors(self):
-        status, connectors = self._get(self.URL_CONNECTORS)
-        return json.loads(connectors)
+        status, body = self._get(self.URL_CONNECTORS)
+        return status, body
 
     def get(self, name: str):
-        status, conf = self._get('{}/{}'.format(self.URL_CONNECTORS, name))
-        return json.loads(conf)
+        status, body = self._get('{}/{}'.format(self.URL_CONNECTORS, name))
+        return status, body
 
     def get_plugins(self):
         status, plugins = self._get(self.URL_CONNECTOR_PLUGINS)
@@ -77,19 +105,27 @@ class KafkaConnectManager(object):
 
     def get_status(self, name: str):
         status, body = self._get('{}/{}/status'.format(self.URL_CONNECTORS, name))
-        return json.loads(body)
+        return status, body
 
     def get_config(self, name: str):
-        status, conf = self._get('{}/{}/config'.format(self.URL_CONNECTORS, name))
-        return status, conf
+        status, body = self._get('{}/{}/config'.format(self.URL_CONNECTORS, name))
+        return status, body
 
     def restart(self, name: str):
         status, body = self._post('{}/{}/restart'.format(self.URL_CONNECTORS, name), '')
         return status, body
 
+    def restart_task(self, name:str, task_id):
+        status, body = self._post('{}/{}/tasks/{}/restart'.format(self.URL_CONNECTORS, name, task_id), '')
+        return status, body
+
     def pause(self, name: str):
-        status, body = self._get('{}/{}/pause'.format(self.URL_CONNECTORS, name))
-        return json.loads(body)
+        status, body = self._put('{}/{}/pause'.format(self.URL_CONNECTORS, name))
+        return status, body
+
+    def resume(self, name: str):
+        status, body = self._put('{}/{}/resume'.format(self.URL_CONNECTORS, name))
+        return status, body
 
     def close(self):
         self.client.close()
@@ -112,90 +148,135 @@ def plugin_show():
     # TODO: timeout error
 
 
-@cli.group('env', help="environment configuration")
-def env():
-    pass
-
-
-@env.command('show')
-def env_show():
+@cli.command('env', help="environment configuration")
+@click.option('-s', '--set_current', help="set the environment")
+def env(set_current):
     with open(ENV_CONFIG_FILE) as f:
         data = json.load(f)
+    if data is None:
+        raise Exception('failed to load env config.')
+    if set_current is None:
         click.echo(json.dumps(data, indent=4))
-
-
-@env.command('set')
-@click.argument('name')
-def env_set_current(name):
-    data = None
-    with open(ENV_CONFIG_FILE) as f:
-        data = json.load(f)
-    if name not in data['available']:
-        click.secho("env '{}' is not available.".format(name), fg='red')
         return
-    data['current'] = name
-    with open(ENV_CONFIG_FILE, 'w') as f:
-        json.dump(data, f, indent=4)
-    click.secho('done.', fg='green')
+
+    if set_current in data['available']:
+        data['current'] = set_current
+        with open(ENV_CONFIG_FILE, 'w') as f:
+            json.dump(data, f, indent=4)
+        click.secho("current env switch to '{}'.".format(set_current), fg='green')
+    else:
+        click.secho("'{}' not defined.", fg='red')
+        click.echo("Available env:")
+        click.echo(json.dumps(data, indent=4))
 
 
 @cli.command('ls', help="list all the connectors.")
 def list_connectors():
-    connectors = _CM.list_connectors()
-    [click.echo(c) for c in connectors]
+    status, body = _CM.list_connectors()
+    if status is not 200:
+        click.echo(status)
+        click.echo(body)
+        return
+    connectors = json.loads(body)
+    longest_name_length = 0
+    for c in connectors:
+        if len(c) > longest_name_length:
+            longest_name_length = len(c)
+
+    def format_print(c):
+        connector_state = c['connector']['state']
+        s = '%-*s | %-7s' % (longest_name_length, c['name'], connector_state)
+        not_running_task_exists = False
+        fg = 'green'
+        s_tasks = ""
+        for t in c['tasks']:
+            task_state = t['state']
+            s_tasks += " | task[{}]:{:>7}".format(t['id'], task_state)
+            if task_state != 'RUNNING':
+                not_running_task_exists = True
+        # TODO: color
+        s += s_tasks
+        if connector_state != 'RUNNING' or not_running_task_exists:
+            if connector_state == 'PAUSED':
+                fg = 'yellow'
+            else:
+                fg = 'red'
+        click.secho(s, fg=fg)
+
+    for c in connectors:
+        status, body = _CM.get_status(c)
+        if status != 200:
+            # TODO
+            click.echo(status, body)
+        else:
+            format_print(json.loads(body))
 
 
 @cli.command('get', help="get the detailed information of a connector.")
 @click.argument('name')
 def get(name):
-    conf = _CM.get(name)
-    click.echo(json.dumps(conf, indent=4))
+    status, body = _CM.get(name)
+    echo_status_and_body(status, body)
 
 
 @cli.command('status', help="show the running status of a connector.")
 @click.argument('name')
 def get_status(name):
-    conf = _CM.get_status(name)
-    click.echo(json.dumps(conf, indent=4))
+    status, body = _CM.get_status(name)
+    echo_status_and_body(status, body)
 
 
 @cli.command('conf', help="show the configuration of a connector.")
 @click.argument('name')
 def get_config(name):
-    _, conf = _CM.get_config(name)
-    click.echo(conf)
-    click.echo(json.dumps(conf, indent=4))
+    status, body = _CM.get_config(name)
+    echo_status_and_body(status, body)
 
 
 @cli.command('post', help="create a new connector.")
 @click.argument('config_file', type=click.File('rb'))
 def post_conf(config_file):
     body = config_file.read()
+    try:
+        data = json.loads(body)
+    except json.decoder.JSONDecodeError as err:
+        click.secho('json syntax error.', bg='red')
+        click.echo(err, err=True)
+        return
     status, ret_body = _CM.create(body)
-    color = 'green'
-    if status is not 201:
-        color = 'red'
-    click.secho(str(status), fg=color)
-    click.echo(ret_body)
+    echo_status_and_body(status, ret_body)
+
+
+@cli.command('pause', help="pause a connector")
+@click.argument('name')
+def pause(name):
+    status, body = _CM.pause(name)
+    echo_status_and_body(status, body)
+
+
+@cli.command('resume', help="resume a connector")
+@click.argument('name')
+def resume(name):
+    status, body = _CM.resume(name)
+    echo_status_and_body(status, body)
 
 
 @cli.command('rm', help="delete a connector.")
 @click.argument('name')
 def delete(name):
     status, ret_body = _CM.delete(name)
-    color = 'green'
-    if status is not 204:
-        color = 'red'
-    click.secho(str(status), fg=color)
-    click.echo(ret_body)
+    echo_status_and_body(status, ret_body)
 
 
 @cli.command('restart', help="restart a connector.")
 @click.argument('name')
-def restart(name):
-    status, ret_body = _CM.restart(name)
-    click.echo(status)
-    click.echo(ret_body)
+@click.option('-t', '--task_id', help="task to restart")
+def restart(name, task_id):
+    if task_id is None:
+        status, ret_body = _CM.restart(name)
+    else:
+        status, ret_body = _CM.restart_task(name, task_id)
+    echo_status_and_body(status, ret_body)
 
 
 @cli.command('recreate', help="delete a connector and restart it.")
@@ -230,6 +311,12 @@ def recreate(name):
     else:
         click.echo('failed to create, status: {}'.format(status))
         click.echo(val)
+
+
+# @cli.command('backup', help='backup a connector config')
+# @click.argument('name')
+# def fetch(name):
+#     # todo
 
 
 if __name__ == "__main__":
