@@ -17,6 +17,9 @@ if [ ! -f $ENV_DIR/env.json ]; then
     cp $KCLI_HOME/env.json $ENV_DIR/env.json
 fi
 
+echo "pip3 install ..."
+pip3 install -r $KCLI_HOME/requirements.txt
+
 
 # (re-)create the link to kcli
 echo "Link to kcli..."

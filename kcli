@@ -13,15 +13,12 @@ For each endpoint, we can
 
 TODO:
 1. fetch all the configurations, and backup them into curl
-# 2. while listing all the connectors, also show their status.
 3. restart only one single task
 4. request confirmation for dangerous operations
 5. show configuration's json diff while posting a new connector
 6. sanity check before posting a connector
     - check if the name of the connector is the same as the group id.
-# 7. Pause a connector
 8. Template to generate the configurations for debezium
-
 """
 
 import click
@@ -29,12 +26,11 @@ import http.client
 import json
 import os
 
-ENV_CONFIG_FILE = os.path.join(os.environ['HOME'], '.kccli/env.json')
+ENV_CONFIG_FILE = os.path.join(os.environ['HOME'], '.kcli/env.json')
 _CM = None
 
 
 def echo_status_and_body(status, body):
-    fg = ''
     if 200 <= status < 300:
         fg = 'green'
     elif 400 <= status < 600:
