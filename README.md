@@ -1,4 +1,4 @@
-#kccli
+# kcli
 
 Manage your kafka connects easily with CLI
 
@@ -6,10 +6,7 @@ Manage your kafka connects easily with CLI
 
 * python3
 
-# Install
 
-run `./install`
+## Install
 
-# Add environments
-
-Add the cluster endpoints in the env.json
+run `./install.sh`

@@ -3,14 +3,12 @@
 
 """
 For each endpoint, we can
-
 1. show available connects
 2. show status of a connect
 3. restart
 4. pause
 5. delete (kill) a given connect
 6. create a connect
-
 TODO:
 1. fetch all the configurations, and backup them into curl
 3. restart only one single task
@@ -25,6 +23,7 @@ import click
 import http.client
 import json
 import os
+from socket import gaierror
 
 ENV_CONFIG_FILE = os.path.join(os.environ['HOME'], '.kcli/env.json')
 _CM = None
@@ -327,7 +326,11 @@ if __name__ == "__main__":
 
     if base_url is not None:
         _CM = KafkaConnectManager(base_url)
-        cli()
-        _CM.close()
+        try:
+            cli()
+        except gaierror:
+            click.secho('%s (%s) is unreachable.' % (current, base_url), fg='yellow')
+        finally:
+            _CM.close()
     else:
         click.echo('missing endpoint.')
